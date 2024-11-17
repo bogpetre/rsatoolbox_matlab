@@ -50,11 +50,11 @@ numCond = max(conditionVec);
 if (length(conditionVec)<numReg)
     conditionVec=[conditionVec;zeros(numReg-length(conditionVec),1)];
 end;
-Z = indicatorMatrix('identity_p',conditionVec);
+Z = rsa.util.indicatorMatrix('identity_p',conditionVec);
 nonInterest = all(Z==0,2);   % Regressors not in the conditions
 numNonInterest = sum(nonInterest);
 Z(nonInterest,end+1:end+sum(numNonInterest))=eye(numNonInterest);
-C = indicatorMatrix('allpairs',[1:numCond]);
+C = rsa.util.indicatorMatrix('allpairs',[1:numCond]);
 
 %%% Get partions: For each run (1:K), find the time points (T) and regressors (K+Q) that belong to the run
 partT = nan(T,1);
@@ -63,7 +63,10 @@ numPart=length(SPM.Sess);                                     %%% number of runs
 for i=1:numPart
     partT(SPM.Sess(i).row,1)=i;
     partN(SPM.Sess(i).col,1)=i;
-    partN(SPM.xX.iB(i),1)=i;                                %%% Add intercepts
+
+    % modified for compatability with concatenated multisession data
+    intercept_ind = any((partT == i).*SPM.xX.X(:,SPM.xX.iB));
+    partN(SPM.xX.iB(intercept_ind),1)=i;                                %%% Add intercepts
 end;
 
 KWY=spm_filter(xX.K,xX.W*Y);                               %%% filter out low-frequence trends in Y
@@ -80,14 +83,14 @@ switch (Opt.normmethod)
                     idxT = partT==i;
                     idxN = partN==i;
                     numFilt = size(xX.K(i).X0,2);
-                    [Sw_hat(:,:,i),shrink(i)]=covdiag(res(idxT,:),SPM.xX.trRV/(numPart*mean(diag(SPM.xX.Bcov))));   %%% regularize Sw_hat through optimal shrinkage
+                    [Sw_hat(:,:,i),shrink(i)]=rsa.stat.covdiag(res(idxT,:),SPM.xX.trRV/(numPart*mean(diag(SPM.xX.Bcov))));   %%% regularize Sw_hat through optimal shrinkage
                     [V,L]=eig(Sw_hat(:,:,i));       % This is overall faster and numerical more stable than Sw_hat.^-1/2
                     l=diag(L);
                     sq = V*bsxfun(@rdivide,V',sqrt(l)); % Slightly faster than sq = V*diag(1./sqrt(l))*V';
                     KWY(idxT,:)=KWY(idxT,:)*sq;
                 end;
             case 'overall'
-                Sw_hat=covdiag(res,SPM.xX.trRV/mean(diag(SPM.xX.Bcov)));    % regularize Sw_hat through optimal shrinkage
+                Sw_hat=rsa.stat.covdiag(res,SPM.xX.trRV/mean(diag(SPM.xX.Bcov)));    % regularize Sw_hat through optimal shrinkage
                 [V,L]=eig(Sw_hat);                  % This is overall faster and numerical more stable than Sw_hat.^-1/2
                 l=diag(L);
                 sq = V*bsxfun(@rdivide,V',sqrt(l)); % Slightly faster than sq = V*diag(1./sqrt(l))*V';
@@ -110,6 +113,8 @@ for i=1:numPart
     Xa = X(indxT,indxN);
     Ma  = Xa*Za;
     A(:,:,i)     = (Ma'*Ma)\(Ma'*KWY(indxT,:));
+    % line below handles 24 motion vectors (which are often highly colinear) better
+    %A(:,:,i)     = pinv(Ma)*KWY(indxT,:);
     
     % Get the betas based on the other runs 
     indxN = partN~=i;
@@ -119,6 +124,8 @@ for i=1:numPart
     Xb    = X(indxT,indxN);
     Mb    = Xb*Zb;
     B     = (Mb'*Mb)\Mb'*KWY(indxT,:);
+    % line below handles 24 motion vectors (which are often highly colinear) better
+    %B     = pinv(Mb)*KWY(indxT,:);
     
     % Pick condition of interest
     interest = ~nonInterest(partN==i);
