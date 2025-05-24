@@ -48,8 +48,8 @@ xX    = SPM.xX;                                            %%% take the design
 %%% Get partions: For each run (1:K), find the time points (T) and regressors (K+Q) that belong to the run
 partT = nan(T,1);
 partQ = nan(Q,1);
-Nrun=length(SPM.Sess);                                     %%% number of runs
-for i=1:Nrun
+Nsess=length(SPM.Sess);                                     %%% number of runs
+for i=1:Nsess
     partT(SPM.Sess(i).row,1)=i;
     partQ(SPM.Sess(i).col,1)=i;
     %partQ(SPM.xX.iB(i),1)=i;                                %%% Add intercepts
@@ -71,8 +71,8 @@ clear KWY XZ                                               %%% clear to save mem
 switch (Opt.normmode)
     case 'runwise'              % do run-wise noise normalization
         u_hat   = zeros(size(beta_hat));
-        shrink=zeros(Nrun,1);
-        for i=1:Nrun
+        shrink=zeros(Nsess,1);
+        for i=1:Nsess
             idxT    = partT==i;             % Time points for this partition 
             idxQ    = partQ==i;             % Regressors for this partition 
             % we potentially have multiple (concatenated) runs per session, 
@@ -88,7 +88,7 @@ switch (Opt.normmode)
             end								
             
             % in the scaling of the noise, take into account mean beta-variance 
-            [Sw_reg(:,:,i),shrinkage(i),Sw_hat(:,:,i)]=rsa.stat.covdiag(res(idxT,:),SPM.xX.trRV/(Nrun*mean(diag(SPM.xX.Bcov))),'shrinkage',Opt.shrinkage);                    %%% regularize Sw_hat through optimal shrinkage
+            [Sw_reg(:,:,i),shrinkage(i),Sw_hat(:,:,i)]=rsa.stat.covdiag(res(idxT,:),SPM.xX.trRV/(Nsess*mean(diag(SPM.xX.Bcov))),'shrinkage',Opt.shrinkage);                    %%% regularize Sw_hat through optimal shrinkage
             % Calculating sq over the eigenvalues is numerically more
             % stable than sq = Sw_reg^-1/2 
             [V,L]=eig(Sw_reg(:,:,i));   
