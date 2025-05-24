@@ -27,6 +27,9 @@ function [u_hat,resMS,Sw_hat,beta_hat,shrinkage,trRR]=noiseNormalizeBeta(Y,SPM,v
 % joern.diedrichsen@googlemail.com
 % 10/2018: Updated scaling of prehwitened-betas, to take into account the
 % variance of betas (bCov).
+%
+% Modified for multirun multisession compatibility by Bogdan Petre on
+% 05/22/2025
 Opt.normmode = 'overall';  % Either runwise or overall
 Opt.shrinkage = []; 
 Opt = rsa.getUserOptions(varargin,Opt);
@@ -49,7 +52,14 @@ Nrun=length(SPM.Sess);                                     %%% number of runs
 for i=1:Nrun
     partT(SPM.Sess(i).row,1)=i;
     partQ(SPM.Sess(i).col,1)=i;
-    partQ(SPM.xX.iB(i),1)=i;                                %%% Add intercepts
+    %partQ(SPM.xX.iB(i),1)=i;                                %%% Add intercepts
+    % infer intercepts belonging to this session from presence of a column
+    % of ones
+    is_one = abs(SPM.xX.X(partT==i,:)-1) < eps;
+    is_zero = abs(SPM.xX.X(partT==i,:)) < eps;
+    run_intercepts = find(sum(is_one) > 1 & all(is_one | is_zero)); % binary columns (e.g. includes spikes)
+    run_intercepts = run_intercepts(ismember(run_intercepts,SPM.xX.iB)); % filter for intercepts only
+    partQ(run_intercepts,1) = i;
 end;
 
 %%% redo the first-level GLM using matlab functions 
@@ -65,7 +75,17 @@ switch (Opt.normmode)
         for i=1:Nrun
             idxT    = partT==i;             % Time points for this partition 
             idxQ    = partQ==i;             % Regressors for this partition 
-            numFilt = size(xX.K(i).X0,2);   % Number of filter variables for this run 
+            % we potentially have multiple (concatenated) runs per session, 
+            % so we can't assume a single K, we have to identify the runs 
+            % and get a different K for each (this assumes filter functions
+            % have been modified appropriately via an spm_fmri_concatenate
+            % like call).
+            %numFilt = size(xX.K(i).X0,2);   % Number of filter variables for this run
+            run_filter_ind = find(ismember(SPM.xX.iB,find(idxQ))); % indices into SPM.xX.K corresponding to this run
+            numFilt = 0;
+            for j = run_filter_ind
+                numFilt = numFilt + size(xX.K(j).X0,2);   % Number of filter variables for this run 
+            end								
             
             % in the scaling of the noise, take into account mean beta-variance 
             [Sw_reg(:,:,i),shrinkage(i),Sw_hat(:,:,i)]=rsa.stat.covdiag(res(idxT,:),SPM.xX.trRV/(Nrun*mean(diag(SPM.xX.Bcov))),'shrinkage',Opt.shrinkage);                    %%% regularize Sw_hat through optimal shrinkage
