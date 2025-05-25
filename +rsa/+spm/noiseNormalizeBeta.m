@@ -88,7 +88,10 @@ switch (Opt.normmode)
             end								
             
             % in the scaling of the noise, take into account mean beta-variance 
-            [Sw_reg(:,:,i),shrinkage(i),Sw_hat(:,:,i)]=rsa.stat.covdiag(res(idxT,:),SPM.xX.trRV/(Nsess*mean(diag(SPM.xX.Bcov))),'shrinkage',Opt.shrinkage);                    %%% regularize Sw_hat through optimal shrinkage
+            %[Sw_reg(:,:,i),shrinkage(i),Sw_hat(:,:,i)]=rsa.stat.covdiag(res(idxT,:),SPM.xX.trRV/(NSess*mean(diag(SPM.xX.Bcov))),'shrinkage',Opt.shrinkage);                    %%% regularize Sw_hat through optimal shrinkage
+            % rescale the residuals inestead of the dof to avoid affecting
+            % shrinkage calculations, and use per-run scaling
+            [Sw_reg(:,:,i),shrinkage(i),Sw_hat(:,:,i)]=rsa.stat.covdiag(res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(idxQ,idxQ)))),SPM.xX.trRV/NSess,'shrinkage',Opt.shrinkage);                    %%% regularize Sw_hat through optimal shrinkage
             % Calculating sq over the eigenvalues is numerically more
             % stable than sq = Sw_reg^-1/2 
             [V,L]=eig(Sw_reg(:,:,i));   
@@ -102,8 +105,10 @@ switch (Opt.normmode)
         Sw_reg = mean(Sw_reg,3); 
     case 'overall'              %%% do overall noise normalization
         % in the scaling of the noise, take into account mean beta-variance 
-        [Sw_reg,shrinkage,Sw_hat]=rsa.stat.covdiag(res,SPM.xX.trRV/mean(diag(SPM.xX.Bcov)),'shrinkage',Opt.shrinkage);   %%% regularize Sw_hat through optimal shrinkage
-
+        %[Sw_reg,shrinkage,Sw_hat]=rsa.stat.covdiag(res,SPM.xX.trRV/mean(diag(SPM.xX.Bcov)),'shrinkage',Opt.shrinkage);   %%% regularize Sw_hat through optimal shrinkage
+        % rescale the residuals inestead of the dof to avoid affecting
+        % shrinkage calculations
+        [Sw_reg,shrinkage,Sw_hat]=rsa.stat.covdiag(res*sqrt(mean(diag(SPM.xX.Bcov))),SPM.xX.trRV/mean(diag(SPM.xX.Bcov)),'shrinkage',Opt.shrinkage);   %%% regularize Sw_hat through optimal shrinkage            
         % Postmultiply by the inverse square root of the estimated matrix 
         [V,L]=eig(Sw_reg);  % in the scaling of the noise, take into account mean beta-variance 
         l=diag(L);
