@@ -31,9 +31,20 @@ prior=diag(diag(sample));
 
 % if required, compute shrinkage parameter using Ledoit-Wolf method 
 if (isempty(Opt.shrinkage))
+    %{
     d=1/n*norm(sample-prior,'fro')^2;
     y=x.^2;
     r2=1/n/df^2*sum(sum(y'*y))-1/n/df*sum(sum(sample.^2));
+    shrinkage = max(0,min(1,r2/d));
+    %}
+    % simplify for legibility:
+    d=norm(sample-prior,'fro')^2;
+    y=x.^2;
+    % r2 this is "b2" in the parlance of Leidot and Wolf 2004 J of Multivar
+    % Analysis, but note that they estimate this with a scaled identity
+    % matrix as their prior, not a diagonal matrix, and it's not obvious 
+    % that this generalizes.
+    r2=1/df^2*sum(sum(y'*y))-1/df*sum(sum(sample.^2));
     shrinkage = max(0,min(1,r2/d));
 else 
     shrinkage = Opt.shrinkage; 
