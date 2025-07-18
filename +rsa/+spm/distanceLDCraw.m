@@ -1,4 +1,4 @@
-function [d, Sig] = distanceLDCraw(Y,SPM,conditionVec,varargin)
+function [d, Sig, name] = distanceLDCraw(Y,SPM,conditionVec,varargin)
 % function d=rsa.spm.distanceLDCraw(Y,SPM,conditionVec,varargin);
 % First, gets the regression coefficent from the SPM, and prewhitens them.
 % Prewhiten can be controlled using different methods (run-wise or overall).
@@ -27,10 +27,29 @@ function [d, Sig] = distanceLDCraw(Y,SPM,conditionVec,varargin)
 %   'normmethod':  'multivariate': The is the default using ledoit-wolf reg.
 %                  'univariate': Performing univariate noise normalisation (t-values)
 %                  'none':    No noise normalisation
+%   'shrinkage':   Nuermic value between 0 and 1 indicating how much shrinkage to use.
+%                  Has no effect unless using multivariate noise normalization.
+%   'target':     Shrinkage target (prior). No effect unless using
+%                 multivariante noise normalization.
+%                 'diagonal': equivalent to a scaled t-stat map
+%                 'scaledidentity': identity scaled to mean variance
+%   'nonlinearshrink': 
+%                 0 or 1. If specified, nonlinear shrinkage is used.
+%                 Requires covShrinkage package on matlab path, and in
+%                 particular the QIS function: 
+%                 https://www.mathworks.com/matlabcentral/fileexchange/106240-covshrinkage
+%                 If specified, shrinkage and target have no effect except
+%                 for regions with n <= 50 or p <= 50, for which nonlinear 
+%                 shrinkage doesn't work well (Ledoit & Wolf 2021 Journal 
+%                 of Financial Econometrics) and we fall back to linear 
+%                 shrinkage.
 % (c) 2015 Joern Diedrichsen, Alex Walther
 Opt.normmode = 'runwise';  % Either runwise or overall
 Opt.normmethod = 'multivariate';  % Either runwise or overall
-Opt = rsa.getUserOptions(varargin,Opt,{'normmode','normmethod'});
+Opt.shrinkage = [];
+Opt.target = [];
+Opt.nonlinearshrink = [];
+Opt = rsa.getUserOptions(varargin,Opt,{'normmode','normmethod','shrinkage','target','nonlinearshrink'});
 
 [T,numVox]=size(Y);                                             %%% number of time points and voxels
 
@@ -48,7 +67,7 @@ numReg = size(X,2);
 % Check condition vector
 numCond = max(conditionVec);
 if (length(conditionVec)<numReg)
-    conditionVec=[conditionVec;zeros(numReg-length(conditionVec),1)];
+    conditionVec=[conditionVec; zeros(numReg-length(conditionVec),1)];
 end;
 Z = rsa.util.indicatorMatrix('identity_p',conditionVec);
 nonInterest = all(Z==0,2);   % Regressors not in the conditions
@@ -85,9 +104,14 @@ switch (Opt.normmethod)
                     numFilt = size(xX.K(i).X0,2);
                     %[Sw_hat(:,:,i),shrink(i)]=rsa.stat.covdiag(res(idxT,:),SPM.xX.trRV/(numPart*mean(diag(SPM.xX.Bcov))));   %%% regularize Sw_hat through optimal shrinkage
                     % the line above affects shrinkage, let's instead
-                    % rescale the residuals instead of dof, and use per-run
-                    % scaling
-                    [Sw_hat(:,:,i),shrink(i)]=rsa.stat.covdiag(res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(idxQ,idxQ)))),SPM.xX.trRV/numPart);   %%% regularize Sw_hat through optimal shrinkage
+                    % rescale the residuals instead of dof
+                    df = SPM.xX.trRV/numPart;
+                    if df > 50 && size(res,2) > 50 && ~isempty(Opt.nonlinearshrink) && Opt.nonlinearshrink == 1
+                        Sw_hat(:,:,i) = QIS(res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(conditionVec>0,conditionVec>0)))),round(df));
+                    else                        
+                        [Sw_hat(:,:,i),shrink(i)]=rsa.stat.covdiag(res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(conditionVec>0,conditionVec>0)))),df, ...
+                                'shrinkage', Opt.shrinkage, 'target', Opt.target);%%% regularize Sw_hat through optimal shrinkage
+                    end
                     [V,L]=eig(Sw_hat(:,:,i));       % This is overall faster and numerical more stable than Sw_hat.^-1/2
                     l=diag(L);
                     sq = V*bsxfun(@rdivide,V',sqrt(l)); % Slightly faster than sq = V*diag(1./sqrt(l))*V';
@@ -97,14 +121,41 @@ switch (Opt.normmethod)
                 %Sw_hat=rsa.stat.covdiag(res,SPM.xX.trRV/mean(diag(SPM.xX.Bcov)));    % regularize Sw_hat through optimal shrinkage
                 % the above affects shrinkage, so let's instead rescale the
                 % residuals instead of the dof
-                Sw_hat=rsa.stat.covdiag(res*sqrt(mean(diag(SPM.xX.Bcov))),SPM.xX.trRV);    % regularize Sw_hat through optimal shrinkage
+                df = SPM.xX.trRV;
+                if df > 50 && size(res,2) > 50 && ~isempty(Opt.nonlinearshrink) && Opt.nonlinearshrink == 1
+                    Sw_hat = QiS(res*sqrt(mean(diag(SPM.xX.Bcov(conditionVec>0,conditionVec>0)))),round(df));
+                else
+                    Sw_hat=rsa.stat.covdiag(res*sqrt(mean(diag(SPM.xX.Bcov(conditionVec>0,conditionVec>0)))),df, ...
+                        'shrinkage', Opt.shrinkage, 'target', Opt.target);    % regularize Sw_hat through optimal shrinkage
+                end
                 [V,L]=eig(Sw_hat);                  % This is overall faster and numerical more stable than Sw_hat.^-1/2
                 l=diag(L);
                 sq = V*bsxfun(@rdivide,V',sqrt(l)); % Slightly faster than sq = V*diag(1./sqrt(l))*V';
                 KWY=KWY*sq;
         end;
     case 'univariate'
-        error('univariate noise normalisation not implemented yet');
+        switch (Opt.normmode)
+            case 'runwise'
+                for i=1:numPart
+                    idxT = partT==i;
+                    idxN = partN==i;
+                    numFilt = size(SPM.xX.K(i).X0,2);
+
+                    effective_df = SPM.xX.trRV/numPart;
+                    sigma = sum(res(idxT,:).^2)/effective_df;
+
+                    sq = 1./sqrt(sigma*mean(diag(SPM.xX.Bcov(conditionVec>0,conditionVec>0))));
+                    KWY(idxT,:)=KWY(idxT,:).*sq;
+                end;
+            case 'overall'
+                numFilt = size(SPM.xX.K(1).X0,2);
+
+                effective_df = SPM.xX.trRV;
+                sigma = sum(res.^2)/effective_df;
+
+                sq = 1./sqrt(sigma*mean(diag(SPM.xX.Bcov(conditionVec>0,conditionVec>0))));
+                KWY(idxT,:)=KWY(idxT,:).*sq;
+        end;
     otherwise
         error('normmethod needs to be ''multivariate'', ''univariate'', or ''none''');
 end;
@@ -142,6 +193,8 @@ for i=1:numPart
     d(i,:)= sum((C*A(interest,:,i)).*(C*B(interest,:)),2)'/numVox;      % Note that this is normalised to the number of voxels
 end;
 d = sum(d)./numPart;
+
+name = SPM.xX.name(interest);
 
 % If requested, also calculate the estimated variance-covariance 
 % matrix from the residual across folds. 

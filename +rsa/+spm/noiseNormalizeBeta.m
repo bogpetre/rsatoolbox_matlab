@@ -13,6 +13,20 @@ function [u_hat,resMS,Sw_hat,beta_hat,shrinkage,trRR]=noiseNormalizeBeta(Y,SPM,v
 %                 1: Using only the diagonal - i.e. univariate noise normalisation 
 %                 By default the shrinkage coeffcient is determined using
 %                 the Ledoit-Wolf method. 
+%   'target':     Shrinkage target (prior)
+%                 'diagonal': equivalent to a scaled t-stat map
+%                 'scaledidentity': identity scaled to mean variance
+%   'nonlinearshrink': 
+%                 0 or 1. If specified, nonlinear shrinkage is used.
+%                 Requires covShrinkage package on matlab path, and in
+%                 particular the QIS function: 
+%                 https://www.mathworks.com/matlabcentral/fileexchange/106240-covshrinkage
+%                 If specified, shrinkage and target have no effect except
+%                 for regions with n <= 50 or p <= 50, for which nonlinear 
+%                 shrinkage doesn't work well (Ledoit & Wolf 2021 Journal 
+%                 of Financial Econometrics) and we fall back to linear 
+%                 shrinkage.
+%
 % OUTPUT:
 %    u_hat:       estimated true activity patterns (beta_hat after multivariate noise normalization),
 %    resMS:       residual mean-square - diagonal of the Var-cov matrix of the average beta weight, 1 by P  
@@ -32,6 +46,8 @@ function [u_hat,resMS,Sw_hat,beta_hat,shrinkage,trRR]=noiseNormalizeBeta(Y,SPM,v
 % 05/22/2025
 Opt.normmode = 'overall';  % Either runwise or overall
 Opt.shrinkage = []; 
+Opt.target = [];
+Opt.nonlinearshrink = [];
 Opt = rsa.getUserOptions(varargin,Opt);
 [T,P]=size(Y);                                             %%% number of time points and voxels
 
@@ -48,8 +64,8 @@ xX    = SPM.xX;                                            %%% take the design
 %%% Get partions: For each run (1:K), find the time points (T) and regressors (K+Q) that belong to the run
 partT = nan(T,1);
 partQ = nan(Q,1);
-Nsess=length(SPM.Sess);                                     %%% number of runs
-for i=1:Nsess
+NSess=length(SPM.Sess);                                     %%% number of runs
+for i=1:NSess
     partT(SPM.Sess(i).row,1)=i;
     partQ(SPM.Sess(i).col,1)=i;
     %partQ(SPM.xX.iB(i),1)=i;                                %%% Add intercepts
@@ -68,11 +84,12 @@ beta_hat=xX.pKX*KWY;                                       %%% ordinary least sq
 res=spm_sp('r',xX.xKXs,KWY);                               %%% residuals: res  = Y - X*beta
 clear KWY XZ                                               %%% clear to save memory
 
+noMotion = ~contains(SPM.xX.name,'Realign')'; % filter these from rescaling procedure since they can be on wildly different scales if using quadratics
 switch (Opt.normmode)
     case 'runwise'              % do run-wise noise normalization
         u_hat   = zeros(size(beta_hat));
-        shrink=zeros(Nsess,1);
-        for i=1:Nsess
+        shrink=zeros(NSess,1);
+        for i=1:NSess
             idxT    = partT==i;             % Time points for this partition 
             idxQ    = partQ==i;             % Regressors for this partition 
             % we potentially have multiple (concatenated) runs per session, 
@@ -90,8 +107,19 @@ switch (Opt.normmode)
             % in the scaling of the noise, take into account mean beta-variance 
             %[Sw_reg(:,:,i),shrinkage(i),Sw_hat(:,:,i)]=rsa.stat.covdiag(res(idxT,:),SPM.xX.trRV/(NSess*mean(diag(SPM.xX.Bcov))),'shrinkage',Opt.shrinkage);                    %%% regularize Sw_hat through optimal shrinkage
             % rescale the residuals inestead of the dof to avoid affecting
-            % shrinkage calculations, and use per-run scaling
-            [Sw_reg(:,:,i),shrinkage(i),Sw_hat(:,:,i)]=rsa.stat.covdiag(res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(idxQ,idxQ)))),SPM.xX.trRV/NSess,'shrinkage',Opt.shrinkage);                    %%% regularize Sw_hat through optimal shrinkage
+            % shrinkage calculations
+            scaleFactor = sqrt(mean(diag(SPM.xX.Bcov(noMotion,noMotion))));
+            assert(imag(scaleFactor) == 0, 'Imaginary Bcov matrix found. Please check for badly scaled design matrix columns.')
+            df = SPM.xX.trRV/NSess;
+            if df > 50 && size(res,2) > 50 && ~isempty(Opt.nonlinearshrink) && Opt.nonlinearshrink == 1
+                X = res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(noMotion,noMotion))));
+                Sw_hat(:,:,i) = 1/df*(X'*X);
+                Sw_reg(:,:,i) = QIS(X,round(df));
+                shrinkage(i) = nan;
+            else
+                [Sw_reg(:,:,i),shrinkage(i),Sw_hat(:,:,i)]=rsa.stat.covdiag(res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(noMotion,noMotion)))),df,...
+                    'shrinkage',Opt.shrinkage,'target',Opt.target);                    %%% regularize Sw_hat through optimal shrinkage
+            end
             % Calculating sq over the eigenvalues is numerically more
             % stable than sq = Sw_reg^-1/2 
             [V,L]=eig(Sw_reg(:,:,i));   
@@ -108,7 +136,16 @@ switch (Opt.normmode)
         %[Sw_reg,shrinkage,Sw_hat]=rsa.stat.covdiag(res,SPM.xX.trRV/mean(diag(SPM.xX.Bcov)),'shrinkage',Opt.shrinkage);   %%% regularize Sw_hat through optimal shrinkage
         % rescale the residuals inestead of the dof to avoid affecting
         % shrinkage calculations
-        [Sw_reg,shrinkage,Sw_hat]=rsa.stat.covdiag(res*sqrt(mean(diag(SPM.xX.Bcov))),SPM.xX.trRV/mean(diag(SPM.xX.Bcov)),'shrinkage',Opt.shrinkage);   %%% regularize Sw_hat through optimal shrinkage            
+        df = SPM.xX.trRV;
+        if df > 50 && size(res,2) > 50 && ~isempty(Opt.nonlinearshrink) && Opt.nonlinearshrink == 1
+            X = res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(noMotion,noMotion))));
+            Sw_hat = 1/df*(X'*X);
+            Sw_reg = QIS(X,round(df));
+            shrinkage = nan;
+        else
+            [Sw_reg,shrinkage,Sw_hat]=rsa.stat.covdiag(res*sqrt(mean(diag(SPM.xX.Bcov(noMotion, noMotion)))),df,...
+                'shrinkage',Opt.shrinkage,'target',Opt.target);   %%% regularize Sw_hat through optimal shrinkage            
+        end
         % Postmultiply by the inverse square root of the estimated matrix 
         [V,L]=eig(Sw_reg);  % in the scaling of the noise, take into account mean beta-variance 
         l=diag(L);
