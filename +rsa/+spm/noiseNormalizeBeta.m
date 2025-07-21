@@ -7,7 +7,19 @@ function [u_hat,resMS,Sw_hat,beta_hat,shrinkage,trRR]=noiseNormalizeBeta(Y,SPM,v
 %    SPM:     SPM structure
 % OPTIONS:
 %   'normmode':   'overall': Does the multivariate noise normalisation overall (default)
-%                 'runwise': Does the multivariate noise normalisation by run
+%                 'runwise': Does the multivariate noise normalisation by 
+%                     run. This is the same as 'partwise' unless you use
+%                     scan concatenation in your SPM design, in which case
+%                     we need to distinguish between 'runs' (in SPMs
+%                     language) and "partitions"/"sessions" (Diedrichsen/SPM 
+%                     terms respectively). If concatenating runs this does
+%                     noise normalization for each run separately, the same
+%                     as timeseries whitening in SPM.
+%                  'partwise': Does multivariate noise normalization by
+%                     partition. If run concatenation is used this
+%                     does multivariate noise normalization based on the
+%                     concatenated residuals, same as SPMs residual error
+%                     variance calculation.
 %   'shrinkage':  Shrinkage coefficient. 
 %                 0: No regularisation 
 %                 1: Using only the diagonal - i.e. univariate noise normalisation 
@@ -78,6 +90,12 @@ for i=1:NSess
     partQ(run_intercepts,1) = i;
 end;
 
+runT = nan(T,1);
+numRun = length(SPM.xX.K);
+for i = 1:numRun
+    runT(SPM.xX.K(i).row) = i;
+end
+
 %%% redo the first-level GLM using matlab functions 
 KWY=spm_filter(xX.K,xX.W*Y);                               %%% filter out low-frequence trends in Y
 beta_hat=xX.pKX*KWY;                                       %%% ordinary least squares estimate of beta_hat = inv(X'*X)*X'*Y
@@ -87,6 +105,40 @@ clear KWY XZ                                               %%% clear to save mem
 noMotion = ~contains(SPM.xX.name,'Realign')'; % filter these from rescaling procedure since they can be on wildly different scales if using quadratics
 switch (Opt.normmode)
     case 'runwise'              % do run-wise noise normalization
+        u_hat   = zeros(size(beta_hat));
+        shrink=zeros(NSess,1);
+        for i=1:numRun
+            idxT    = runT==i;             % Time points for this partition
+            idxQ    = partQ==i;             % Individual runs all have the same columns when concatenated
+            
+            % in the scaling of the noise, take into account mean beta-variance 
+            %[Sw_reg(:,:,i),shrinkage(i),Sw_hat(:,:,i)]=rsa.stat.covdiag(res(idxT,:),SPM.xX.trRV/(NSess*mean(diag(SPM.xX.Bcov))),'shrinkage',Opt.shrinkage);                    %%% regularize Sw_hat through optimal shrinkage
+            % rescale the residuals inestead of the dof to avoid affecting
+            % shrinkage calculations
+            scaleFactor = sqrt(mean(diag(SPM.xX.Bcov(noMotion,noMotion))));
+            assert(imag(scaleFactor) == 0, 'Imaginary Bcov matrix found. Please check for badly scaled design matrix columns.')
+            df = SPM.xX.trRV/size(res,1)*sum(idxT);
+            if df > 50 && size(res,2) > 50 && ~isempty(Opt.nonlinearshrink) && Opt.nonlinearshrink == 1
+                X = res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(noMotion,noMotion))));
+                Sw_hat(:,:,i) = 1/df*(X'*X);
+                Sw_reg(:,:,i) = QIS(X,round(df));
+                shrinkage(i) = nan;
+            else
+                [Sw_reg(:,:,i),shrinkage(i),Sw_hat(:,:,i)]=rsa.stat.covdiag(res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(noMotion,noMotion)))),df,...
+                    'shrinkage',Opt.shrinkage,'target',Opt.target);                    %%% regularize Sw_hat through optimal shrinkage
+            end
+            % Calculating sq over the eigenvalues is numerically more
+            % stable than sq = Sw_reg^-1/2 
+            [V,L]=eig(Sw_reg(:,:,i));   
+            l=diag(L);
+            sq(:,:,i) = V*bsxfun(@rdivide,V',sqrt(l)); % Slightly faster than sq = V*diag(1./sqrt(l))*V';
+            % Postmultiply by the inverse square root of the estimated matrix 
+            u_hat(idxQ,:)=beta_hat(idxQ,:)*sq(:,:,i);
+        end;
+        shrinkage=mean(shrinkage);
+        Sw_hat = mean(Sw_hat,3); 
+        Sw_reg = mean(Sw_reg,3); 
+    case 'partwise'              % do run-wise noise normalization
         u_hat   = zeros(size(beta_hat));
         shrink=zeros(NSess,1);
         for i=1:NSess

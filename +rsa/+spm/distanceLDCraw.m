@@ -22,7 +22,19 @@ function [d, Sig, name] = distanceLDCraw(Y,SPM,conditionVec,varargin)
 %    d:            numCond*(numCond-1)/2 distances between experimental
 %                  conditions
 % OPTIONs:
-%   'normmode':    'runwise': Does the multivariate noise normalisation by run
+%   'normmode':    'runwise': Does the multivariate noise normalisation by 
+%                     run. This is the same as 'partwise' unless you use
+%                     scan concatenation in your SPM design, in which case
+%                     we need to distinguish between 'runs' (in SPMs
+%                     language) and "partitions" (Diedrichsen) or
+%                     "sessions" (SPM). If concatenating runs this does
+%                     noise normalization for each run separately, the same
+%                     as timeseries whitening in SPM.
+%                  'partwise': Does multivariate noise normalization by
+%                     partition. If run concatenation is used this
+%                     does multivariate noise normalization based on the
+%                     concatenated residuals, same as SPMs residual error
+%                     variance calculation.
 %                  'overall': Does the multivariate noise normalisation overall
 %   'normmethod':  'multivariate': The is the default using ledoit-wolf reg.
 %                  'univariate': Performing univariate noise normalisation (t-values)
@@ -44,7 +56,7 @@ function [d, Sig, name] = distanceLDCraw(Y,SPM,conditionVec,varargin)
 %                 of Financial Econometrics) and we fall back to linear 
 %                 shrinkage.
 % (c) 2015 Joern Diedrichsen, Alex Walther
-Opt.normmode = 'runwise';  % Either runwise or overall
+Opt.normmode = 'partwise';  % Either runwise, partwise or overall
 Opt.normmethod = 'multivariate';  % Either runwise or overall
 Opt.shrinkage = [];
 Opt.target = [];
@@ -88,6 +100,12 @@ for i=1:numPart
     partN(SPM.xX.iB(intercept_ind),1)=i;                                %%% Add intercepts
 end;
 
+runT = nan(T,1);
+numRun = length(SPM.xX.K);
+for i = 1:numRun
+    runT(SPM.xX.K(i).row) = i;
+end
+
 KWY=spm_filter(xX.K,xX.W*Y);                               %%% filter out low-frequence trends in Y
 res=spm_sp('r',xX.xKXs,KWY);                               %%% residuals: res  = Y - X*beta
 
@@ -98,10 +116,26 @@ switch (Opt.normmethod)
     case 'multivariate'
         switch (Opt.normmode)
             case 'runwise'
+                for i=1:numRun
+                    idxT = runT==i;
+                    %[Sw_hat(:,:,i),shrink(i)]=rsa.stat.covdiag(res(idxT,:),SPM.xX.trRV/(numPart*mean(diag(SPM.xX.Bcov))));   %%% regularize Sw_hat through optimal shrinkage
+                    % the line above affects shrinkage, let's instead
+                    % rescale the residuals instead of dof
+                    df = SPM.xX.trRV/size(res,1)*sum(idxT);   
+                    if df > 50 && size(res,2) > 50 && ~isempty(Opt.nonlinearshrink) && Opt.nonlinearshrink == 1
+                        Sw_hat(:,:,i) = QIS(res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(conditionVec>0,conditionVec>0)))),round(df));
+                    else                        
+                        [Sw_hat(:,:,i),shrink(i)]=rsa.stat.covdiag(res(idxT,:)*sqrt(mean(diag(SPM.xX.Bcov(conditionVec>0,conditionVec>0)))),df, ...
+                                'shrinkage', Opt.shrinkage, 'target', Opt.target);%%% regularize Sw_hat through optimal shrinkage
+                    end
+                    [V,L]=eig(Sw_hat(:,:,i));       % This is overall faster and numerical more stable than Sw_hat.^-1/2
+                    l=diag(L);
+                    sq = V*bsxfun(@rdivide,V',sqrt(l)); % Slightly faster than sq = V*diag(1./sqrt(l))*V';
+                    KWY(idxT,:)=KWY(idxT,:)*sq;
+                end;
+            case 'partwise'
                 for i=1:numPart
                     idxT = partT==i;
-                    idxN = partN==i;
-                    numFilt = size(xX.K(i).X0,2);
                     %[Sw_hat(:,:,i),shrink(i)]=rsa.stat.covdiag(res(idxT,:),SPM.xX.trRV/(numPart*mean(diag(SPM.xX.Bcov))));   %%% regularize Sw_hat through optimal shrinkage
                     % the line above affects shrinkage, let's instead
                     % rescale the residuals instead of dof
